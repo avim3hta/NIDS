@@ -1,0 +1,70 @@
+# Windows system files
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.lnk
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+[Bb]in
+[Ii]nclude
+[Ll]ib
+[Ll]ib64
+[Ll]ocal
+[Ss]cripts
+pyvenv.cfg
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Firewall and NIDS logs
+logs/
+*.log
+log/
+alert_*.txt
+packet_*.pcap
+C:/ProgramData/Snort/log/*
+*.pcap
+*.evt
+*.evtx
+
+# IDE and editor files (Windows)
+.vs/
+.vscode/
+*.swp
+*.swo
+*~
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# Windows thumbnails
+*.db
+*.dir
+
+# Project specific
+config/*.yaml
+!config/default_rules.yaml
+*.db
+*.sqlite3
+temp/
