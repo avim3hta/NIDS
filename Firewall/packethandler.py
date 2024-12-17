@@ -7,8 +7,10 @@ from firewall_rules import RuleManager, Action, Protocol, Rule
 class PacketHandler:
     #Handles packet capture and processing with rule-based filtering.
  
-    def __init__(self, interface="eth0"):
-        self.interface = interface
+    def __init__(self, interfaces=None):
+        if interfaces is None:
+            interfaces = ['wlo1', 'eth0']
+        self.interfaces = interfaces
         self.logger = FirewallLogger()
         self.rule_manager = RuleManager()
         self.running = False
@@ -56,13 +58,12 @@ class PacketHandler:
         ))
 
     def start_capture(self):
-        #Start packet capture and filtering
         self.running = True
-        self.logger.log_info(f"Starting packet capture on interface {self.interface}")
+        self.logger.log_info(f"Starting packet capture on interfaces: {', '.join(self.interfaces)}")
         
         try:
             sniff(
-                iface=self.interface,
+                iface=self.interfaces,
                 prn=self.process_packet,
                 store=0,
                 stop_filter=lambda _: not self.running

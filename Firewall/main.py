@@ -18,14 +18,14 @@ class FirewallNIDS:
     Main application class that integrates firewall and NIDS functionality.
     Manages packet capture, rule enforcement, and intrusion detection.
     """
-    def __init__(self, interface="wlo1", config_file="config/rules.yaml"):
+    def __init__(self, interfaces=None, config_file="config/rules.yaml"):
         # Initialize base directory and paths
         self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.config_file = os.path.join(self.base_dir, config_file)
         
         # Initialize core components
         self.logger = FirewallLogger(log_directory=os.path.join(self.base_dir, 'logs'))
-        self.packet_handler = PacketHandler(interface=interface)
+        self.packet_handler = PacketHandler(interfaces=interfaces)
         self.config = RuleConfiguration(self.config_file)
         
         # Initialize NIDS after packet handler
@@ -36,7 +36,7 @@ class FirewallNIDS:
         
         # Log initialization
         self.logger.log_info("FirewallNIDS initialization complete")
-        self.logger.log_info(f"Using interface: {interface}")
+        self.logger.log_info(f"Using interfaces: {', '.join(interfaces) if interfaces else 'default'}")
         self.logger.log_info(f"Config file: {self.config_file}")
 
     def start(self):
@@ -191,12 +191,11 @@ def main():
         # Check for root privileges
         check_privileges()
         
-        # Get the default network interface
-        interfaces = os.listdir('/sys/class/net/')
-        interface = 'wlo1' if 'wlo1' in interfaces else interfaces[0]
+        # Get the default network interfaces
+        interfaces = ['wlo1', 'eth0']
         
         # Create and start the firewall NIDS
-        firewall_nids = FirewallNIDS(interface=interface)
+        firewall_nids = FirewallNIDS(interfaces=interfaces)
         firewall_nids.start()
         
     except KeyboardInterrupt:
