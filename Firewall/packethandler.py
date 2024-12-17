@@ -1,137 +1,137 @@
+# packet_handler.py
+
 from scapy.all import *
 from scapy.layers.inet import IP, TCP, UDP, ICMP
 import threading
+from typing import Dict, Optional, List
+from dataclasses import dataclass
+from datetime import datetime
+
+from firewall_rules import RuleManager, Rule, Action, Protocol
 from logger import FirewallLogger
-from firewall_rules import RuleManager, Action, Protocol, Rule
+
+@dataclass
+class PacketStats:
+    """Statistics for packet processing"""
+    total_packets: int = 0
+    allowed_packets: int = 0
+    denied_packets: int = 0
+    last_packet_time: Optional[datetime] = None
 
 class PacketHandler:
-    #Handles packet capture and processing with rule-based filtering.
- 
-    def __init__(self, interfaces=None):
-        if interfaces is None:
-            interfaces = ['wlo1', 'eth0']
+    """
+    Handles packet capture and processing with rule-based filtering.
+    Supports multiple network interfaces and maintains per-interface statistics.
+    """
+    
+    def __init__(self, interfaces: List[str]):
         self.interfaces = interfaces
         self.logger = FirewallLogger()
         self.rule_manager = RuleManager()
+        
+        # Per-interface statistics
+        self.stats: Dict[str, PacketStats] = {
+            interface: PacketStats() for interface in interfaces
+        }
+        
+        # Thread management
         self.running = False
-        self.packet_count = 0
+        self.capture_threads: Dict[str, threading.Thread] = {}
         self.lock = threading.Lock()
-        
-        # Set up default rules
-        self._setup_default_rules()
 
-    def _setup_default_rules(self):
-        """Set up default firewall rules"""
-        # Allow web traffic
-        self.rule_manager.add_rule(Rule(
-            action=Action.ALLOW,
-            protocol=Protocol.TCP,
-            destination_port=80,
-            description="Allow HTTP traffic",
-            priority=100
-        ))
-        
-        self.rule_manager.add_rule(Rule(
-            action=Action.ALLOW,
-            protocol=Protocol.TCP,
-            destination_port=443,
-            description="Allow HTTPS traffic",
-            priority=100
-        ))
-
-        # Allow DNS
-        self.rule_manager.add_rule(Rule(
-            action=Action.ALLOW,
-            protocol=Protocol.UDP,
-            destination_port=53,
-            description="Allow DNS queries",
-            priority=90
-        ))
-
-        # Allow local network
-        self.rule_manager.add_rule(Rule(
-            action=Action.ALLOW,
-            protocol=Protocol.ANY,
-            source_ip="192.168.1.0/24",
-            description="Allow local network traffic",
-            priority=80
-        ))
-
-    def start_capture(self):
+    def start(self):
+        """Start packet capture on all interfaces"""
         self.running = True
-        self.logger.log_info(f"Starting packet capture on interfaces: {', '.join(self.interfaces)}")
         
+        for interface in self.interfaces:
+            thread = threading.Thread(
+                target=self._capture_packets,
+                args=(interface,)
+            )
+            thread.daemon = True
+            thread.start()
+            self.capture_threads[interface] = thread
+            
+        self.logger.log_info(f"Started packet capture on interfaces: {', '.join(self.interfaces)}")
+
+    def stop(self):
+        """Stop packet capture on all interfaces"""
+        self.running = False
+        
+        for thread in self.capture_threads.values():
+            if thread.is_alive():
+                thread.join()
+                
+        self.logger.log_info("Packet capture stopped")
+
+    def _capture_packets(self, interface: str):
+        """Capture and process packets on specified interface"""
         try:
             sniff(
-                iface=self.interfaces,
-                prn=self.process_packet,
+                iface=interface,
+                prn=lambda pkt: self._process_packet(pkt, interface),
                 store=0,
                 stop_filter=lambda _: not self.running
             )
-            
         except Exception as e:
-            self.logger.log_error(f"Error in packet capture: {str(e)}")
-            self.running = False
-            raise
+            self.logger.log_error(f"Error capturing packets on {interface}: {e}")
 
-    def stop_capture(self):
-        #top packet capture
-        self.logger.log_info("Stopping packet capture")
-        self.running = False
-
-    def process_packet(self, packet):
-        #Process and filter captured packets
+    def _process_packet(self, packet: Packet, interface: str) -> bool:
+        """Process a captured packet and apply firewall rules"""
         try:
             with self.lock:
-                self.packet_count += 1
+                self.stats[interface].total_packets += 1
+                self.stats[interface].last_packet_time = datetime.now()
+            
+            if not packet.haslayer(IP):
+                return True
             
             packet_info = self._extract_packet_info(packet)
             if not packet_info:
-                return
+                return True
             
-            # Evaluate packet against rules
+            # Evaluate against rules
             action = self.rule_manager.evaluate_packet(packet_info)
             
-            # Log the action
-            self.logger.log_info(
-                f"Packet {self.packet_count}: "
-                f"{packet_info['src_ip']}:{packet_info.get('src_port', '')} -> "
-                f"{packet_info['dst_ip']}:{packet_info.get('dst_port', '')} "
-                f"[{packet_info['protocol']}] - {action.value.upper()}"
-            )
+            with self.lock:
+                if action == Action.ALLOW:
+                    self.stats[interface].allowed_packets += 1
+                else:
+                    self.stats[interface].denied_packets += 1
             
-            # Return true to allow packet,false to block
+            self._log_packet(packet_info, action, interface)
             return action == Action.ALLOW
             
         except Exception as e:
-            self.logger.log_error(f"Error processing packet: {str(e)}")
+            self.logger.log_error(f"Error processing packet: {e}")
             return False
 
-    def _extract_packet_info(self, packet):
-        #extract relevant information from a packet
-        if IP not in packet:
+    def _extract_packet_info(self, packet: Packet) -> Optional[Dict]:
+        """Extract relevant information from packet"""
+        if not packet.haslayer(IP):
             return None
             
         info = {
             'src_ip': packet[IP].src,
             'dst_ip': packet[IP].dst,
-            'protocol': 'unknown'
+            'protocol': 'unknown',
+            'timestamp': datetime.now()
         }
         
-        if TCP in packet:
+        if packet.haslayer(TCP):
             info.update({
                 'protocol': 'tcp',
                 'src_port': packet[TCP].sport,
                 'dst_port': packet[TCP].dport,
                 'flags': packet[TCP].flags
             })
-        elif UDP in packet:
+        elif packet.haslayer(UDP):
             info.update({
                 'protocol': 'udp',
                 'src_port': packet[UDP].sport,
                 'dst_port': packet[UDP].dport
             })
-        elif ICMP in packet:
+        elif packet.haslayer(ICMP):
             info.update({
                 'protocol': 'icmp',
                 'type': packet[ICMP].type,
@@ -140,14 +140,45 @@ class PacketHandler:
             
         return info
 
+    def _log_packet(self, packet_info: Dict, action: Action, interface: str):
+        """Log packet processing results"""
+        self.logger.log_info(
+            f"[{interface}] {packet_info['src_ip']}:{packet_info.get('src_port', '')} -> "
+            f"{packet_info['dst_ip']}:{packet_info.get('dst_port', '')} "
+            f"[{packet_info['protocol']}] - {action.value.upper()}"
+        )
+
+    def get_stats(self, interface: Optional[str] = None) -> Dict:
+        """Get packet processing statistics"""
+        if interface:
+            return self._get_interface_stats(interface)
+        return {
+            iface: self._get_interface_stats(iface)
+            for iface in self.interfaces
+        }
+
+    def _get_interface_stats(self, interface: str) -> Dict:
+        """Get statistics for specific interface"""
+        stats = self.stats[interface]
+        return {
+            'total_packets': stats.total_packets,
+            'allowed_packets': stats.allowed_packets,
+            'denied_packets': stats.denied_packets,
+            'last_packet_time': stats.last_packet_time
+        }
+
+    def get_interfaces(self) -> List[str]:
+        """Get list of monitored interfaces"""
+        return self.interfaces.copy()
+
     def add_rule(self, rule: Rule):
-        #Add a new firewall rul
+        """Add a new firewall rule"""
         self.rule_manager.add_rule(rule)
 
-    def remove_rule(self, rule_id: str):
-        #Remove a firewall rule
+    def remove_rule(self, rule_id: str) -> bool:
+        """Remove a firewall rule"""
         return self.rule_manager.remove_rule(rule_id)
 
-    def get_rules(self):
-        #Get all current firewall rules
+    def get_rules(self) -> List[Rule]:
+        """Get all current firewall rules"""
         return self.rule_manager.get_rules()

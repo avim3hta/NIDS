@@ -1,205 +1,157 @@
+# main.py
+
 import os
 import sys
 import signal
 import threading
-from datetime import datetime
-from scapy.all import *
-from scapy.layers.inet import IP, TCP, UDP, ICMP
-
-# Import our custom components
+from pathlib import Path
+from typing import Dict, Any
+import time
 from packethandler import PacketHandler
-from firewall_rules import Rule, Action, Protocol
+from nids_analyzer import NIDSAnalyzer
 from rule_config import RuleConfiguration
 from logger import FirewallLogger
-from nids_analyzer import NIDSAnalyzer
 
 class FirewallNIDS:
     """
     Main application class that integrates firewall and NIDS functionality.
-    Manages packet capture, rule enforcement, and intrusion detection.
+    Coordinates all components and manages system lifecycle.
     """
-    def __init__(self, interfaces=None, config_file="config/rules.yaml"):
-        # Initialize base directory and paths
-        self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.config_file = os.path.join(self.base_dir, config_file)
+    
+    def __init__(self, config_file: str = "config/rules.yaml"):
+        # Initialize base paths
+        self.base_dir = Path(__file__).parent.parent
+        self.config_path = self.base_dir / config_file
         
-        # Initialize core components
-        self.logger = FirewallLogger(log_directory=os.path.join(self.base_dir, 'logs'))
-        self.packet_handler = PacketHandler(interfaces=interfaces)
-        self.config = RuleConfiguration(self.config_file)
+        # Set up logging first
+        self.logger = FirewallLogger(log_directory=self.base_dir / 'logs')
         
-        # Initialize NIDS after packet handler
-        self.nids = NIDSAnalyzer(self.packet_handler)
+        # Initialize components
+        self.config = RuleConfiguration(self.config_path)
+        self.packet_handler = PacketHandler(self._get_network_interfaces())
+        self.analyzers: Dict[str, NIDSAnalyzer] = {}
         
-        # Set initial state
+        # Create NIDS analyzer for each interface
+        for interface in self.packet_handler.get_interfaces():
+            self.analyzers[interface] = NIDSAnalyzer(interface)
+        
+        # State management
         self.running = False
-        
-        # Log initialization
-        self.logger.log_info("FirewallNIDS initialization complete")
-        self.logger.log_info(f"Using interfaces: {', '.join(interfaces) if interfaces else 'default'}")
-        self.logger.log_info(f"Config file: {self.config_file}")
-
+        self.start_time = None
+    
     def start(self):
-        """
-        Starts the firewall and NIDS components.
-        Sets up signal handling and begins packet processing.
-        """
+        """Start the firewall and NIDS components"""
         try:
             self.running = True
+            self.start_time = time.time()
             self.logger.log_info("Starting FirewallNIDS")
             
-            # Set up signal handlers for graceful shutdown
-            def signal_handler(signum, frame):
-                self.shutdown()
+            # Set up signal handlers
+            signal.signal(signal.SIGINT, lambda s, f: self.shutdown())
+            signal.signal(signal.SIGTERM, lambda s, f: self.shutdown())
             
-            signal.signal(signal.SIGINT, signal_handler)
-            signal.signal(signal.SIGTERM, signal_handler)
+            # Load and apply firewall rules
+            self._load_rules()
             
-            # Load firewall rules
-            self.load_config()
+            # Start packet handler
+            self.packet_handler.start()
             
-            # Start packet capture in a separate thread
-            capture_thread = threading.Thread(target=self.packet_handler.start_capture)
-            capture_thread.daemon = True
-            capture_thread.start()
+            # Start NIDS analyzers
+            for analyzer in self.analyzers.values():
+                analyzer.start()
             
-            print("FirewallNIDS is running. Press Ctrl+C to stop.")
+            self.logger.log_info("FirewallNIDS started successfully")
             
-            # Keep the main thread alive and monitor system
+            # Keep main thread alive
             while self.running:
-                # Monitor system status and performance
                 self._monitor_system()
-                # Sleep to prevent high CPU usage
                 time.sleep(1)
                 
         except Exception as e:
-            self.logger.log_error(f"Error in FirewallNIDS operation: {str(e)}")
+            self.logger.log_error(f"Error starting FirewallNIDS: {str(e)}")
             self.shutdown()
             raise
 
     def shutdown(self):
-        """
-        Performs graceful shutdown of all components.
-        Ensures all resources are properly cleaned up.
-        """
-        print("\nShutting down FirewallNIDS...")
+        """Perform graceful shutdown of all components"""
+        print("\nInitiating shutdown...")
         self.running = False
         
-        # Stop NIDS analysis
-        if hasattr(self, 'nids'):
-            self.nids.stop()
-            
-        # Stop packet capture
-        if hasattr(self, 'packet_handler'):
-            self.packet_handler.stop_capture()
-            
-        # Save current rules configuration
-        if hasattr(self, 'config'):
-            self.save_config()
-            
+        # Stop analyzers
+        for analyzer in self.analyzers.values():
+            analyzer.stop()
+        
+        # Stop packet handler
+        self.packet_handler.stop()
+        
+        # Save current rules
+        self._save_rules()
+        
         self.logger.log_info("FirewallNIDS shutdown complete")
         sys.exit(0)
 
-    def load_config(self):
-        """
-        Loads firewall rules from configuration file.
-        Creates default rules if config file is missing.
-        """
+    def _get_network_interfaces(self) -> list:
+        """Get list of available network interfaces"""
+        interfaces = []
+        try:
+            # Try to get all network interfaces
+            for iface in os.listdir('/sys/class/net/'):
+                if iface not in ['lo']:  # Exclude loopback
+                    interfaces.append(iface)
+            return interfaces or ['eth0']  # Default to eth0 if no interfaces found
+        except Exception as e:
+            self.logger.log_error(f"Error getting network interfaces: {e}")
+            return ['eth0']
+
+    def _load_rules(self):
+        """Load firewall rules from configuration"""
         try:
             rules = self.config.load_rules()
             for rule in rules:
                 self.packet_handler.add_rule(rule)
-            self.logger.log_info(f"Loaded {len(rules)} rules from configuration")
-        except FileNotFoundError:
-            self.logger.log_warning("Configuration file not found, using default rules")
-            self._setup_default_rules()
         except Exception as e:
-            self.logger.log_error(f"Error loading configuration: {str(e)}")
+            self.logger.log_error(f"Error loading rules: {e}")
             self._setup_default_rules()
 
-    def save_config(self):
-        """
-        Saves current firewall rules to configuration file.
-        """
+    def _save_rules(self):
+        """Save current firewall rules to configuration"""
         try:
             rules = self.packet_handler.get_rules()
-            if self.config.save_rules(rules):
-                self.logger.log_info("Rules configuration saved successfully")
-            else:
-                self.logger.log_error("Failed to save rules configuration")
+            self.config.save_rules(rules)
         except Exception as e:
-            self.logger.log_error(f"Error saving configuration: {str(e)}")
-
-    def _setup_default_rules(self):
-        """
-        Creates basic default rules for essential services.
-        """
-        default_rules = [
-            Rule(
-                action=Action.ALLOW,
-                protocol=Protocol.TCP,
-                destination_port=80,
-                description="Allow HTTP traffic",
-                priority=100
-            ),
-            Rule(
-                action=Action.ALLOW,
-                protocol=Protocol.TCP,
-                destination_port=443,
-                description="Allow HTTPS traffic",
-                priority=100
-            ),
-            Rule(
-                action=Action.ALLOW,
-                protocol=Protocol.UDP,
-                destination_port=53,
-                description="Allow DNS queries",
-                priority=90
-            )
-        ]
-        
-        for rule in default_rules:
-            self.packet_handler.add_rule(rule)
-            
-        self.logger.log_info("Default rules configured")
+            self.logger.log_error(f"Error saving rules: {e}")
 
     def _monitor_system(self):
-        """
-        Monitors system status and logs performance metrics.
-        """
-        if hasattr(self.packet_handler, 'packet_count'):
-            self.logger.log_info(
-                f"Processed packets: {self.packet_handler.packet_count}, "
-                f"Active rules: {len(self.packet_handler.get_rules())}, "
-                f"Alerts: {len(self.nids.alerts)}"
-            )
-
-def check_privileges():
-    """
-    Verifies the application has necessary privileges.
-    """
-    if os.geteuid() != 0:
-        print("Error: This program must be run with root privileges!")
-        print("Please try again using 'sudo python3 main.py'")
-        sys.exit(1)
+        """Monitor system status and log statistics"""
+        try:
+            stats = {
+                'uptime': time.time() - self.start_time,
+                'interfaces': {}
+            }
+            
+            for interface, analyzer in self.analyzers.items():
+                stats['interfaces'][interface] = {
+                    'packets_processed': self.packet_handler.get_stats(interface),
+                    'alerts': analyzer.get_stats()
+                }
+            
+            self.logger.log_info("System Status", extra=stats)
+            
+        except Exception as e:
+            self.logger.log_error(f"Error monitoring system: {e}")
 
 def main():
-    """
-    Main entry point for the FirewallNIDS application.
-    """
+    """Main entry point for the application"""
+    # Check for root privileges
+    if os.geteuid() != 0:
+        print("Error: This program must be run with root privileges!")
+        sys.exit(1)
+    
     try:
-        # Check for root privileges
-        check_privileges()
-        
-        # Get the default network interfaces
-        interfaces = ['wlo1', 'eth0']
-        
-        # Create and start the firewall NIDS
-        firewall_nids = FirewallNIDS(interfaces=interfaces)
-        firewall_nids.start()
-        
+        firewall = FirewallNIDS()
+        firewall.start()
     except KeyboardInterrupt:
-        print("\nFirewallNIDS stopped by user")
+        print("\nShutdown requested by user")
     except Exception as e:
         print(f"Error: {str(e)}")
         sys.exit(1)
