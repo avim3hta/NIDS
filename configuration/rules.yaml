@@ -1,0 +1,42 @@
+rules:
+  - action: allow
+    protocol: tcp
+    destination_port: 80
+    description: "Allow HTTP traffic"
+    priority: 100
+
+  - action: allow
+    protocol: tcp
+    destination_port: 443
+    description: "Allow HTTPS traffic"
+    priority: 100
+
+  - action: allow
+    protocol: udp
+    destination_port: 53
+    description: "Allow DNS queries"
+    priority: 90
+
+  - action: allow
+    protocol: any
+    source_ip: "192.168.1.0/24"
+    description: "Allow local network traffic"
+    priority: 80
+
+  - action: allow
+    protocol: udp
+    source_port: 53
+    description: "Allow inbound DNS responses"
+    priority: 85
+
+  - action: allow
+    protocol: tcp
+    state: established
+    description: "Allow established TCP connections"
+    priority: 50
+
+  - action: allow
+    protocol: udp
+    state: established
+    description: "Allow established UDP connections"
+    priority: 50
