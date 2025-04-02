@@ -1,0 +1,7 @@
+pyyaml
+pypcap
+python-snort
+logging
+typing
+ipaddress
+
